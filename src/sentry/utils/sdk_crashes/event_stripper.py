@@ -38,9 +38,7 @@ EVENT_DATA_ALLOWLIST = {
         "values": {
             "stacktrace": {
                 "frames": {
-                    "filename": Allow.NEVER.with_explanation(
-                        "The filename path could contain the app name."
-                    ),
+                    "filename": Allow.SIMPLE_TYPE,
                     "function": Allow.SIMPLE_TYPE,
                     "raw_function": Allow.SIMPLE_TYPE,
                     "module": Allow.SIMPLE_TYPE,
@@ -179,7 +177,7 @@ def _strip_frames(
             # The path field usually contains the name of the application, which we can't keep.
             for field in sdk_crash_detector.fields_containing_paths:
                 if frame.get(field):
-                    frame[field] = sdk_crash_detector.replace_sdk_frame_path(field)
+                    frame[field] = sdk_crash_detector.replace_sdk_frame_path(frame.get(field))
         else:
             frame["in_app"] = False
 
