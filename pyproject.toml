@@ -32,6 +32,9 @@ filterwarnings = [
     # Consider all warnings to be errors other than the ignored ones.
     "error",
 
+    # TODO: once we upgrade celery / kombu this can be removed
+    "ignore:SelectableGroups dict interface is deprecated. Use select.",
+
     # The following warning filters are for pytest only.
     # This is so we don't have to wrap most datetime objects in testing code
     # with django.utils.timezone.
