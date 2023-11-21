@@ -226,7 +226,7 @@ export function InviteMissingMembersModal({
         stickyHeaders
       >
         {memberInvites?.map((member, i) => {
-          const checked = memberInvites[i].selected;
+          const checked = member.selected;
           const username = member.externalId.split(':').pop();
           return (
             <Fragment key={i}>
@@ -254,6 +254,7 @@ export function InviteMissingMembersModal({
                 aria-label={t('Role')}
                 data-test-id="select-role"
                 disabled={false}
+                value={member.role}
                 roles={allowedRoles}
                 disableUnallowed
                 onChange={value => setRole(value?.value, i)}
