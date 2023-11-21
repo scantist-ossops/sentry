@@ -87,6 +87,21 @@ class RedisQuota(Quota):
                     )
                 )
 
+        with sentry_sdk.start_span(op="redis.get_quotas.get_monitor_quota") as span:
+            mrl_quota, mrl_window = self.get_monitor_quota(project)
+            span.set_tag("project.id", project.id)
+            results.append(
+                QuotaConfig(
+                    id="mrl",
+                    window=mrl_window,
+                    limit=mrl_quota,
+                    scope=QuotaScope.PROJECT,
+                    scope_id=project.id,
+                    categories=[DataCategory.MONITOR],
+                    reason_code="monitor_rate_limit",
+                )
+            )
+
         if key and not keys:
             keys = [key]
         elif not keys:
