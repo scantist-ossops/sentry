@@ -85,6 +85,36 @@ export function InviteBanner({
       const githubMissingMembers = data?.filter(
         integrationMissingMembers => integrationMissingMembers.integration === 'github'
       )[0];
+      if (!githubMissingMembers?.users || githubMissingMembers?.users.length === 0) {
+        setMissingMembers([
+          {
+            commitCount: 6,
+            email: 'hello@sentry.io',
+            externalId: 'github:hello',
+          },
+          {
+            commitCount: 5,
+            email: 'abcd@sentry.io',
+            externalId: 'github:abcd',
+          },
+          {
+            commitCount: 4,
+            email: 'hola@sentry.io',
+            externalId: 'github:hola',
+          },
+          {
+            commitCount: 3,
+            email: 'test@sentry.io',
+            externalId: 'github:test',
+          },
+          {
+            commitCount: 2,
+            email: 'five@sentry.io',
+            externalId: 'github:five',
+          },
+        ]);
+        return;
+      }
       setMissingMembers(githubMissingMembers?.users || []);
     } catch (err) {
       if (err.status !== 403) {
