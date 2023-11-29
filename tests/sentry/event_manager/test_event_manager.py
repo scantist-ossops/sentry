@@ -55,7 +55,6 @@ from sentry.models.auditlogentry import AuditLogEntry
 from sentry.models.commit import Commit
 from sentry.models.commitauthor import CommitAuthor
 from sentry.models.environment import Environment
-from sentry.models.eventuser import EventUser
 from sentry.models.group import Group, GroupStatus
 from sentry.models.groupenvironment import GroupEnvironment
 from sentry.models.grouphash import GroupHash
@@ -91,6 +90,7 @@ from sentry.tsdb.base import TSDBModel
 from sentry.types.activity import ActivityType
 from sentry.utils import json
 from sentry.utils.cache import cache_key_for_event
+from sentry.utils.eventuser import EventUser
 from sentry.utils.outcomes import Outcome
 from sentry.utils.samples import load_data
 
@@ -1170,7 +1170,7 @@ class EventManagerTest(TestCase, SnubaTestCase, EventManagerTestMixin, Performan
             tenant_ids={"organization_id": 123, "referrer": "r"},
         ) == {event.project.id: 1}
 
-        euser = EventUser.objects.get(project_id=self.project.id, ident="1")
+        euser = EventUser.from_event(event)
         assert event.get_tag("sentry:user") == euser.tag_value
 
         # clear the cache otherwise the cached EventUser from prev
@@ -1183,10 +1183,10 @@ class EventManagerTest(TestCase, SnubaTestCase, EventManagerTestMixin, Performan
         with self.tasks():
             event = manager.save(self.project.id)
 
-        euser = EventUser.objects.get(id=euser.id)
+        euser = EventUser.from_event(event)
         assert event.get_tag("sentry:user") == euser.tag_value
         assert euser.name == "jane"
-        assert euser.ident == "1"
+        assert euser.user_ident == "1"
 
     def test_event_user_invalid_ip(self):
         manager = EventManager(
@@ -1201,9 +1201,9 @@ class EventManagerTest(TestCase, SnubaTestCase, EventManagerTestMixin, Performan
         manager._data["user"]["ip_address"] = "[ip]"
 
         with self.tasks():
-            manager.save(self.project.id)
+            event = manager.save(self.project.id)
 
-        euser = EventUser.objects.get(project_id=self.project.id)
+        euser = EventUser.from_event(event)
 
         assert euser.ip_address is None
 
@@ -1211,8 +1211,8 @@ class EventManagerTest(TestCase, SnubaTestCase, EventManagerTestMixin, Performan
         manager = EventManager(make_event(**{"user": {"username": "foô"}}))
         manager.normalize()
         with self.tasks():
-            manager.save(self.project.id)
-        euser = EventUser.objects.get(project_id=self.project.id)
+            event = manager.save(self.project.id)
+        euser = EventUser.from_event(event)
         assert euser.username == "foô"
 
     def test_environment(self):
