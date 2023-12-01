@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
-from typing import Dict, Mapping, Optional
+from typing import Dict, List, Mapping, Optional
 
 import msgpack
 import sentry_sdk
 from arroyo.backends.kafka.consumer import KafkaPayload
 from arroyo.processing.strategies.abstract import ProcessingStrategy, ProcessingStrategyFactory
+from arroyo.processing.strategies.batching import BatchStep, ValuesBatch
 from arroyo.processing.strategies.commit import CommitOffsets
 from arroyo.processing.strategies.run_task import RunTask
 from arroyo.types import BrokerValue, Commit, Message, Partition
 from django.db import router, transaction
-from django.utils.text import slugify
 from sentry_sdk.tracing import Span, Transaction
 
 from sentry import ratelimits
@@ -22,7 +24,6 @@ from sentry.models.project import Project
 from sentry.monitors.logic.mark_failed import mark_failed
 from sentry.monitors.logic.mark_ok import mark_ok
 from sentry.monitors.models import (
-    MAX_SLUG_LENGTH,
     CheckInStatus,
     Monitor,
     MonitorCheckIn,
@@ -34,7 +35,7 @@ from sentry.monitors.models import (
     MonitorType,
 )
 from sentry.monitors.tasks import try_monitor_tasks_trigger
-from sentry.monitors.types import CheckinMessage, CheckinPayload, ClockPulseMessage
+from sentry.monitors.types import CheckinItem, CheckinMessage, ClockPulseMessage
 from sentry.monitors.utils import (
     get_new_timeout_at,
     get_timeout_at,
@@ -280,17 +281,16 @@ def update_existing_check_in(
     return
 
 
-def _process_checkin(
-    params: CheckinPayload,
-    message_ts: datetime,
-    start_time: datetime,
-    project_id: int,
-    source_sdk: str,
-    txn: Transaction | Span,
-):
-    monitor_slug = slugify(params["monitor_slug"])[:MAX_SLUG_LENGTH].strip("-")
+def _process_checkin(item: CheckinItem, txn: Transaction | Span):
+    params = item.payload
 
+    start_time = to_datetime(float(item.message["start_time"]))
+    project_id = int(item.message["project_id"])
+    source_sdk = item.message["sdk"]
+
+    monitor_slug = item.valid_monitor_slug
     environment = params.get("environment")
+
     project = Project.objects.get_from_cache(id=project_id)
 
     # Strip sdk version to reduce metric cardinality
@@ -549,7 +549,7 @@ def _process_checkin(
             # into the Kafka topic until we just completed processing.
             #
             # XXX: We are ONLY recording this metric for completed check-ins.
-            delay = datetime.now() - message_ts
+            delay = datetime.now() - item.ts
             metrics.gauge("monitors.checkin.completion_time", delay.total_seconds())
 
             metrics.incr(
@@ -566,30 +566,75 @@ def _process_checkin(
         logger.exception("Failed to process check-in", exc_info=True)
 
 
-def _process_message(
-    ts: datetime,
-    partition: int,
-    wrapper: CheckinMessage | ClockPulseMessage,
-) -> None:
-    try:
-        try_monitor_tasks_trigger(ts, partition)
-    except Exception:
-        logger.exception("Failed to trigger monitor tasks", exc_info=True)
+_checkin_workwer = ThreadPoolExecutor()
 
-    # Nothing else to do with clock pulses
-    if wrapper["message_type"] == "clock_pulse":
-        return
 
-    with sentry_sdk.start_transaction(
-        op="_process_message",
-        name="monitors.monitor_consumer",
-    ) as txn:
-        params: CheckinPayload = json.loads(wrapper["payload"])
-        start_time = to_datetime(float(wrapper["start_time"]))
-        project_id = int(wrapper["project_id"])
-        source_sdk = wrapper["sdk"]
+def process_checkin_group(items: List[CheckinItem]):
+    for item in items:
+        try:
+            with sentry_sdk.start_transaction(
+                op="_process_checkin",
+                name="monitors.monitor_consumer",
+            ) as txn:
+                _process_checkin(item, txn)
+        except Exception:
+            logger.exception("Failed to process check-in", exc_info=True)
+            continue
 
-        _process_checkin(params, ts, start_time, project_id, source_sdk, txn)
+
+def process_batch(message: Message[ValuesBatch[KafkaPayload]]):
+    """
+    Receives batches of check-in messages. This function will take the batch
+    and group them together by monitor ID (ensuring order is preserved) and
+    execute each group using a ThreadPoolWorker.
+
+    By batching we're able to process check-ins in paralell while guaranteeing
+    that no check-ins are processed out of order per monitor environment.
+    """
+    batch = message.payload
+
+    latest_partition_ts: Mapping[int, datetime] = {}
+    checkin_mapping: Mapping[str, List[CheckinItem]] = defaultdict(list)
+
+    for item in batch:
+        assert isinstance(item, BrokerValue)
+
+        try:
+            wrapper: CheckinMessage | ClockPulseMessage = msgpack.unpackb(item.payload.value)
+        except Exception:
+            logger.exception("Failed to unpack message payload", exc_info=True)
+            continue
+
+        latest_partition_ts[item.partition.index] = item.timestamp
+
+        # Nothing needs to be done with a clock pulse, we will have already
+        # stored the latest_partition_ts to be used to tick the clock at the
+        # end of this batch if necessary
+        if wrapper["message_type"] == "clock_pulse":
+            continue
+
+        item = CheckinItem(
+            ts=item.timestamp,
+            partition=item.partition.index,
+            message=wrapper,
+            payload=json.loads(wrapper["payload"]),
+        )
+        checkin_mapping[item.processing_key].append(item)
+
+    # Submit check-in groups for processing
+    with sentry_sdk.start_transaction(op="process_batch", name="monitors.monitor_consumer"):
+        futures = [
+            _checkin_workwer.submit(process_checkin_group, group)
+            for group in checkin_mapping.values()
+        ]
+        wait(futures)
+
+    # Attempt to trigger monitor tasks across processed partitions
+    for partition, ts in latest_partition_ts.items():
+        try:
+            try_monitor_tasks_trigger(ts, partition)
+        except Exception:
+            logger.exception("Failed to trigger monitor tasks", exc_info=True)
 
 
 class StoreMonitorCheckInStrategyFactory(ProcessingStrategyFactory[KafkaPayload]):
@@ -598,19 +643,12 @@ class StoreMonitorCheckInStrategyFactory(ProcessingStrategyFactory[KafkaPayload]
         commit: Commit,
         partitions: Mapping[Partition, int],
     ) -> ProcessingStrategy[KafkaPayload]:
-        def process_message(message: Message[KafkaPayload]) -> None:
-            assert isinstance(message.value, BrokerValue)
-            try:
-                wrapper = msgpack.unpackb(message.payload.value)
-                _process_message(
-                    message.value.timestamp,
-                    message.value.partition.index,
-                    wrapper,
-                )
-            except Exception:
-                logger.exception("Failed to process message payload")
-
-        return RunTask(
-            function=process_message,
+        batch_processor = RunTask(
+            function=process_batch,
             next_step=CommitOffsets(commit),
+        )
+        return BatchStep(
+            max_batch_size=500,
+            max_batch_time=10,
+            next_step=batch_processor,
         )
