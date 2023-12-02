@@ -76,9 +76,9 @@ def fetch_metric_alert_sessions_data(
         )
         return resp.data
     except Exception as exc:
-        logger.error(
-            f"Failed to load sessions for chart: {exc}",
-            exc_info=True,
+        logger.exception(
+            "Failed to load sessions for chart: %s",
+            exc,
         )
         raise exc
 
@@ -114,7 +114,8 @@ def fetch_metric_alert_events_timeseries(
         return [series]
     except Exception as exc:
         logger.error(
-            f"Failed to load events-stats for chart: {exc}",
+            "Failed to load events-stats for chart: %s",
+            exc,
             exc_info=True,
         )
         raise exc
@@ -142,7 +143,8 @@ def fetch_metric_alert_incidents(
         return resp.data
     except Exception as exc:
         logger.error(
-            f"Failed to load incidents for chart: {exc}",
+            "Failed to load incidents for chart: %s",
+            exc,
             exc_info=True,
         )
         return []
@@ -243,7 +245,8 @@ def build_metric_alert_chart(
         return charts.generate_chart(style, chart_data, size=size)
     except RuntimeError as exc:
         logger.error(
-            f"Failed to generate chart for metric alert: {exc}",
+            "Failed to generate chart for metric alert: %s",
+            exc,
             exc_info=True,
         )
         return None

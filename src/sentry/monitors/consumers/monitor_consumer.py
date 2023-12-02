@@ -563,7 +563,7 @@ def _process_checkin(
             tags={**metric_kwargs, "status": "error"},
         )
         txn.set_tag("result", "error")
-        logger.exception("Failed to process check-in", exc_info=True)
+        logger.exception("Failed to process check-in")
 
 
 def _process_message(
@@ -571,10 +571,16 @@ def _process_message(
     partition: int,
     wrapper: CheckinMessage | ClockPulseMessage,
 ) -> None:
+    # XXX: Relay does not attach a message type, to properly discriminate the
+    # message_type we add it by default here. This can be removed once the
+    # message_type is guaranteed
+    if "message_type" not in wrapper:
+        wrapper["message_type"] = "check_in"
+
     try:
         try_monitor_tasks_trigger(ts, partition)
     except Exception:
-        logger.exception("Failed to trigger monitor tasks", exc_info=True)
+        logger.exception("Failed to trigger monitor tasks")
 
     # Nothing else to do with clock pulses
     if wrapper["message_type"] == "clock_pulse":

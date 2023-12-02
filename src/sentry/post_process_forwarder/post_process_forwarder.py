@@ -56,8 +56,7 @@ class PostProcessForwarder:
         initial_offset_reset: Union[Literal["latest"], Literal["earliest"]],
         strict_offset_reset: bool,
     ) -> None:
-
-        logger.debug(f"Starting post process forwarder to consume {entity} messages")
+        logger.debug("Starting post process forwarder to consume %s messages", entity)
         if entity == PostProcessForwarderType.TRANSACTIONS:
             default_topic = self.transactions_topic
         elif entity == PostProcessForwarderType.ERRORS:
